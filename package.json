@@ -1,0 +1,21 @@
+{
+  "name": "bot-status",
+  "version": "1.0.0",
+  "description": "Bot de status do WhatsApp usando Baileys",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "pair": "node pair.js",
+    "connect": "node qr_connect.js"
+  },
+  "dependencies": {
+    "baileys": "^7.0.0-rc14",
+    "dotenv": "^18.0.9",
+    "googleapis": "^188.0.0",
+    "moment-timezone": "^0.5.46",
+    "node-cron": "^3.0.3",
+    "pino": "^9.0.0",
+    "qrcode": "^1.5.3",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
