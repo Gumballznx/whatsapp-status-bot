@@ -1,6 +1,6 @@
 # WhatsApp Status Bot
 
-Bot automatizado para publicação programada de Status (Stories) no WhatsApp utilizando a biblioteca [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys), com sincronização de contatos via **Google People API** e agendamento de tarefas com **node-cron**.
+Bot automatizado para publicação programada de Status (Stories) no WhatsApp utilizando a biblioteca [Baileys](https://github.com/WhiskeySockets/Baileys) (pacote `baileys` v7), com sincronização de contatos via **Google People API** e agendamento de tarefas com **node-cron**.
 
 ---
 
@@ -14,7 +14,8 @@ O **WhatsApp Status Bot** foi projetado para publicar automaticamente atualizaç
 - **Sincronização de Contatos do Google**: Integração com a Google People API (OAuth 2.0) com suporte a paginação automática para importar contatos telefônicos limpos e formatados no padrão internacional do WhatsApp.
 - **Contador Dinâmico de Dias**: Calcula automaticamente os dias decorridos a partir de uma data inicial base (`START_DATE`), adicionando legendas como `DAY X`.
 - **Agendador Cron Flexível**: Execução programada diária ou periódica com suporte a fuso horário configurável via `moment-timezone`.
-- **Assistente de Pareamento QR Code**: Script dedicado (`qr_connect.js`) com exibição do QR Code no terminal e geração de arquivo `qrcode.png` (com abertura automática no Windows).
+- **Assistentes de Pareamento**: `qr_connect.js` (QR Code no terminal e em `qrcode.png`, com abertura automática no Windows) e `pair.js` (código de pareamento por número de telefone).
+- **Recuperação de Postagem**: se o bot estiver offline no horário agendado, posta assim que reconectar — nunca antes do horário — e sem duplicar postagens.
 - **Pronto para Produção**: Configuração de processo para [PM2](https://pm2.keymetrics.io/) (`ecosystem.config.cjs`) com auto-restart, limite de memória e logs.
 
 ---
@@ -28,12 +29,15 @@ whatsapp-status-bot/
 │   │   └── env.js               # Carregamento e validação de variáveis de ambiente
 │   └── services/
 │       ├── googleContacts.js    # Cliente OAuth 2.0 e busca paginada no Google Contacts
+│       ├── cronMatcher.js       # Verifica se o horário do cron de hoje já passou
 │       ├── scheduler.js         # Agendamento cron e cálculo de contagem de dias
 │       └── statusPoster.js      # Envio de status via Baileys (vídeo, imagem, texto)
 ├── ecosystem.config.cjs         # Configuração de deploy e gerenciamento com PM2
 ├── index.js                     # Ponto de entrada principal do bot e agendador
 ├── package.json                 # Dependências e scripts do projeto
-├── qr_connect.js                # Utilitário de conexão inicial e sincronização de contatos
+├── pair.js                      # Pareamento por código de telefone
+├── qr_connect.js                # Pareamento inicial por QR Code
+├── tests/                       # Testes automatizados (npm test)
 ├── video.mp4                    # Arquivo de mídia padrão para envio
 ├── .env.example                 # Modelo de variáveis de ambiente
 └── .gitignore                   # Arquivos ignorados pelo controle de versão
@@ -43,7 +47,7 @@ whatsapp-status-bot/
 
 ## Pré-requisitos
 
-1. **Node.js**: Versão 18.x ou 20.x instalada.
+1. **Node.js**: Versão 20.x ou superior instalada.
 2. **Conta WhatsApp**: Um smartphone ativo com WhatsApp para leitura do QR Code.
 3. **Credenciais Google Cloud**: Projeto no [Google Cloud Console](https://console.cloud.google.com/) com a **People API** habilitada e credenciais OAuth 2.0 (Client ID, Client Secret e Refresh Token).
 
@@ -78,6 +82,12 @@ GOOGLE_REFRESH_TOKEN="SEU_GOOGLE_REFRESH_TOKEN_AQUI"
 # Número do Dono/Administrador (apenas dígitos: DDI + DDD + número)
 OWNER_NUMBER="258XXXXXXXXX"
 
+# (Opcional) Número do bot para pareamento por código, em vez de QR Code
+# BOT_NUMBER="258XXXXXXXXX"
+
+# DDI aplicado a contatos salvos sem código do país (ex: "84 123 4567" -> 25884...)
+DEFAULT_COUNTRY_CODE="258"
+
 # Expressão Cron para o agendamento (Ex: Todo dia às 09:00 -> "0 9 * * *")
 STATUS_CRON="0 9 * * *"
 
@@ -95,18 +105,22 @@ MEDIA_PATH="./video.mp4"
 
 ## Como Usar
 
-### Passo 1: Primeira Conexão e Sincronização
+### Passo 1: Primeira Conexão
 
-Antes de iniciar o serviço contínuo, utilize o utilitário de conexão para autenticar sua sessão do WhatsApp e aguardar a sincronização inicial:
+Antes de iniciar o serviço contínuo, autentique a sessão do WhatsApp com **uma** das opções:
 
 ```bash
+# Opção A: QR Code
 npm run connect
+
+# Opção B: código de pareamento por número de telefone
+npm run pair -- 258XXXXXXXXX
 ```
 
-1. O script exibirá o QR Code no terminal e salvará a imagem `qrcode.png` (abrindo automaticamente no Windows).
-2. Abra o WhatsApp no celular, vá em **Dispositivos Conectados** > **Conectar um Dispositivo** e escaneie o código.
-3. Aguarde o terminal concluir a leitura e a contagem de contatos estabilizar.
-4. Finalize o utilitário (`Ctrl + C`) assim que a mensagem de sucesso for exibida. A pasta `session/` e o arquivo `contacts_cache.json` estarão salvos.
+- **QR Code**: o script mostra o QR no terminal e salva `qrcode.png` (abre automaticamente no Windows). No celular, vá em **Aparelhos conectados** > **Conectar um aparelho** e escaneie.
+- **Código**: no celular, vá em **Aparelhos conectados** > **Conectar um aparelho** > **Conectar com número de telefone** e digite o código exibido.
+
+Os dois scripts encerram sozinhos depois de conectar, com a sessão salva em `session/`.
 
 ### Passo 2: Executar o Bot
 
@@ -117,9 +131,17 @@ npm start
 ```
 
 Ao iniciar:
-1. O bot restaura a sessão salva em `session/`.
-2. Após conectar com sucesso, dispara automaticamente um envio de verificação (`DAY X (TESTE)`) 5 segundos após a inicialização.
-3. Ativa o agendador `node-cron` para publicações automáticas no horário determinado em `STATUS_CRON`.
+1. O bot restaura a sessão salva em `session/` (se não houver sessão, exibe o QR Code ou, com `BOT_NUMBER` definido, o código de pareamento).
+2. Ativa o agendador `node-cron` para publicações automáticas no horário determinado em `STATUS_CRON`.
+3. Se o horário de hoje já passou e ainda não há postagem registrada em `last_post.json` (ex: o bot estava offline), posta o status pendente. Antes do horário, apenas aguarda o cron.
+
+Se a conexão cair, o bot reconecta automaticamente com espera progressiva (3s, 6s, 12s… até 5 minutos).
+
+### Testes
+
+```bash
+npm test
+```
 
 ---
 
@@ -152,7 +174,7 @@ pm2 stop whatsapp-status-bot
 O WhatsApp restringe o envio de status a transmissões direcionadas (`status@broadcast`). O bot:
 1. Conecta-se à Google People API com o Refresh Token fornecido.
 2. Itera por todas as páginas de conexões (`pageSize: 1000`).
-3. Higieniza os números telefônicos para o formato de JID do WhatsApp (`<DDI><NUMERO>@s.whatsapp.net`).
+3. Higieniza os números telefônicos para o formato de JID do WhatsApp (`<DDI><NUMERO>@s.whatsapp.net`). Números salvos sem código do país recebem o `DEFAULT_COUNTRY_CODE`; números com `+` ou `00` são mantidos no formato internacional.
 4. Inclui o número do dono (`OWNER_NUMBER`) e o próprio número do bot.
 5. Posta o status com a lista `statusJidList`, garantindo que os contatos tenham permissão para visualizar a publicação.
 
@@ -166,7 +188,7 @@ A função de cálculo compara a data atual no fuso horário especificado (`TIME
 ## Tecnologias Utilizadas
 
 - [Node.js](https://nodejs.org/) — Plataforma de desenvolvimento JavaScript
-- [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys) — Cliente Web WhatsApp em TypeScript/JavaScript
+- [Baileys](https://github.com/WhiskeySockets/Baileys) — Cliente Web WhatsApp em TypeScript/JavaScript
 - [googleapis](https://github.com/googleapis/google-api-nodejs-client) — SDK oficial do Google para People API
 - [node-cron](https://github.com/kelektiv/node-cron) — Agendador de tarefas cron
 - [moment-timezone](https://momentjs.com/timezone/) — Manipulação de datas e fusos horários
