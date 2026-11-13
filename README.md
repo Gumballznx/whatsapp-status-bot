@@ -15,6 +15,7 @@ O **WhatsApp Status Bot** foi projetado para publicar automaticamente atualizaç
 - **Contador Dinâmico de Dias**: Calcula automaticamente os dias decorridos a partir de uma data inicial base (`START_DATE`), adicionando legendas como `DAY X`.
 - **Agendador Cron Flexível**: Execução programada diária ou periódica com suporte a fuso horário configurável via `moment-timezone`.
 - **Assistentes de Pareamento**: `qr_connect.js` (QR Code no terminal e em `qrcode.png`, com abertura automática no Windows) e `pair.js` (código de pareamento por número de telefone).
+- **Sempre Online**: com `ALWAYS_ONLINE="true"` (padrão) a conta aparece online o tempo todo e as mensagens recebidas ficam com dois tiques (entregue), sem marcar como lida. Use `false` se quiser que o celular toque as notificações normalmente.
 - **Recuperação de Postagem**: se o bot estiver offline no horário agendado, posta assim que reconectar — nunca antes do horário — e sem duplicar postagens.
 - **Pronto para Produção**: Configuração de processo para [PM2](https://pm2.keymetrics.io/) (`ecosystem.config.cjs`) com auto-restart, limite de memória e logs.
 
@@ -87,6 +88,9 @@ OWNER_NUMBER="258XXXXXXXXX"
 
 # DDI aplicado a contatos salvos sem código do país (ex: "84 123 4567" -> 25884...)
 DEFAULT_COUNTRY_CODE="258"
+
+# Manter a conta sempre "online" (true/false). Com true, o celular pode não tocar notificações.
+ALWAYS_ONLINE="true"
 
 # Expressão Cron para o agendamento (Ex: Todo dia às 09:00 -> "0 9 * * *")
 STATUS_CRON="0 9 * * *"
