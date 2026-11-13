@@ -9,18 +9,27 @@ const {
 } = baileys;
 const pino = require('pino');
 const QRCode = require('qrcode');
+const qrcodeTerminal = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 
 const env = require('./src/config/env');
-const { startScheduler, triggerDailyStatus, hasPostedToday } = require('./src/services/scheduler');
+const {
+    startScheduler,
+    triggerDailyStatus,
+    hasPostedToday,
+    isScheduledTimePassedToday
+} = require('./src/services/scheduler');
 
 const QR_FILE = path.join(__dirname, 'qrcode.png');
+const BASE_RECONNECT_DELAY_MS = 3000;
+const MAX_RECONNECT_DELAY_MS = 5 * 60 * 1000;
+
 let activeSocket = null;
 let schedulerStarted = false;
-let pairingRequested = false;
-let presenceInterval = null;
+let reconnectAttempts = 0;
+let catchUpTimer = null;
 
 function hasValidSession() {
     try {
@@ -33,22 +42,37 @@ function hasValidSession() {
     }
 }
 
-function startPresenceKeepAlive(sock) {
-    if (presenceInterval) {
-        clearInterval(presenceInterval);
-        presenceInterval = null;
-    }
+function scheduleReconnect(delayMs) {
+    console.log(`[Conexão] Reconectando em ${Math.round(delayMs / 1000)} segundo(s)...`);
+    setTimeout(() => {
+        startWhatsAppBot().catch((err) => {
+            console.error('[Conexão] Erro ao iniciar o socket:', err.message || err);
+            reconnectAttempts++;
+            scheduleReconnect(nextReconnectDelay());
+        });
+    }, delayMs);
+}
 
-    sock.sendPresenceUpdate('available').catch(() => {});
+function nextReconnectDelay() {
+    const delay = BASE_RECONNECT_DELAY_MS * 2 ** Math.max(0, reconnectAttempts - 1);
+    return Math.min(delay, MAX_RECONNECT_DELAY_MS);
+}
 
-    // Envia sinal a cada 25 segundos para manter a conexão WebSocket viva com o WhatsApp
-    presenceInterval = setInterval(() => {
-        if (activeSocket?.user) {
-            activeSocket.sendPresenceUpdate('available').catch(() => {});
-        }
-    }, 25000);
+/**
+ * Se o horário agendado de hoje já passou e o status ainda não foi postado
+ * (ex: o bot estava offline no horário), posta agora. Antes do horário, não faz nada:
+ * o cron se encarrega da postagem.
+ */
+function scheduleCatchUpPost() {
+    if (catchUpTimer) clearTimeout(catchUpTimer);
 
-    presenceInterval.unref?.();
+    catchUpTimer = setTimeout(async () => {
+        catchUpTimer = null;
+        if (!activeSocket?.user || hasPostedToday() || !isScheduledTimePassedToday()) return;
+
+        console.log('[Scheduler] Horário agendado já passou e não há postagem registrada para hoje. Disparando status pendente...');
+        await triggerDailyStatus(() => activeSocket, false);
+    }, 5000);
 }
 
 async function startWhatsAppBot() {
@@ -76,13 +100,17 @@ async function startWhatsAppBot() {
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
         },
         browser: Browsers.ubuntu('Chrome'),
-        printQRInTerminal: !env.BOT_NUMBER,
         syncFullHistory: false,
-        markOnlineOnConnect: true,
+        // Não marca a conta como "online": assim o celular continua recebendo notificações
+        markOnlineOnConnect: false,
         keepAliveIntervalMs: 25000,
         defaultQueryTimeoutMs: 180000,
         connectTimeoutMs: 60000
     });
+
+    // O código de pareamento é pedido uma única vez por socket. O evento "qr" se repete
+    // a cada ~20s e pedir um novo código invalidaria o anterior.
+    let pairingRequested = false;
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -91,23 +119,27 @@ async function startWhatsAppBot() {
 
         if (qr && !hasValidSession()) {
             if (env.BOT_NUMBER) {
-                pairingRequested = true;
-                try {
-                    let code = await sock.requestPairingCode(env.BOT_NUMBER);
-                    code = code?.match(/.{1,4}/g)?.join('-') || code;
-                    console.log('\n========================================');
-                    console.log(`📱 NÚMERO DO BOT: +${env.BOT_NUMBER}`);
-                    console.log(`🔑 CÓDIGO DE PAREAMENTO: ${code}`);
-                    console.log('👉 No WhatsApp: Aparelhos conectados > Conectar um aparelho > Conectar com número de telefone');
-                    console.log('========================================\n');
-                } catch (err) {
-                    console.error('[Pairing] Erro ao gerar código:', err.message);
+                if (!pairingRequested) {
+                    pairingRequested = true;
+                    try {
+                        let code = await sock.requestPairingCode(env.BOT_NUMBER);
+                        code = code?.match(/.{1,4}/g)?.join('-') || code;
+                        console.log('\n========================================');
+                        console.log(`📱 NÚMERO DO BOT: +${env.BOT_NUMBER}`);
+                        console.log(`🔑 CÓDIGO DE PAREAMENTO: ${code}`);
+                        console.log('👉 No WhatsApp: Aparelhos conectados > Conectar um aparelho > Conectar com número de telefone');
+                        console.log('========================================\n');
+                    } catch (err) {
+                        pairingRequested = false;
+                        console.error('[Pairing] Erro ao gerar código:', err.message);
+                    }
                 }
             } else {
-                console.log('[Auth] Novo QR Code gerado.');
+                console.log('[Auth] Novo QR Code gerado. Escaneie com o WhatsApp:');
+                qrcodeTerminal.generate(qr, { small: true });
                 try {
                     await QRCode.toFile(QR_FILE, qr, { width: 400 });
-                    console.log(`[Auth] QR Code salvo em: ${QR_FILE}`);
+                    console.log(`[Auth] QR Code também salvo em: ${QR_FILE}`);
                     if (process.platform === 'win32') {
                         exec(`start "" "${QR_FILE}"`);
                     }
@@ -118,16 +150,16 @@ async function startWhatsAppBot() {
         }
 
         if (connection === 'close') {
-            if (presenceInterval) {
-                clearInterval(presenceInterval);
-                presenceInterval = null;
+            if (catchUpTimer) {
+                clearTimeout(catchUpTimer);
+                catchUpTimer = null;
             }
 
             try {
                 sock.end?.(undefined);
             } catch (e) {}
 
-            activeSocket = null;
+            if (activeSocket === sock) activeSocket = null;
 
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             console.warn(`[Conexão] Conexão encerrada. Código de status: ${statusCode}`);
@@ -137,13 +169,14 @@ async function startWhatsAppBot() {
                 if (fs.existsSync(env.SESSION_PATH)) {
                     fs.rmSync(env.SESSION_PATH, { recursive: true, force: true });
                 }
-                pairingRequested = false;
-                console.log('[Conexão] Reiniciando para nova autenticação...');
-                setTimeout(startWhatsAppBot, 2000);
+                if (!env.BOT_NUMBER) {
+                    console.warn('[Conexão] Defina BOT_NUMBER no .env para parear por código, ou acompanhe os logs para escanear o QR Code.');
+                }
+                reconnectAttempts = 0;
+                scheduleReconnect(2000);
             } else {
-                pairingRequested = false;
-                console.log('[Conexão] Reconectando em 3 segundos...');
-                setTimeout(startWhatsAppBot, 3000);
+                reconnectAttempts++;
+                scheduleReconnect(nextReconnectDelay());
             }
         } else if (connection === 'open') {
             console.log('=============================================');
@@ -152,27 +185,24 @@ async function startWhatsAppBot() {
             console.log('=============================================');
 
             activeSocket = sock;
+            reconnectAttempts = 0;
 
             if (fs.existsSync(QR_FILE)) {
                 fs.unlinkSync(QR_FILE);
             }
-
-            startPresenceKeepAlive(sock);
 
             if (!schedulerStarted) {
                 startScheduler(() => activeSocket);
                 schedulerStarted = true;
             }
 
-            // Verifica se o status de hoje ainda não foi postado (ex: horário passou enquanto offline)
-            setTimeout(async () => {
-                if (activeSocket?.user && !hasPostedToday()) {
-                    console.log('[Scheduler] Nenhuma postagem registrada para hoje. Disparando status pendente...');
-                    await triggerDailyStatus(() => activeSocket, false);
-                }
-            }, 5000);
+            scheduleCatchUpPost();
         }
     });
 }
 
-startWhatsAppBot();
+startWhatsAppBot().catch((err) => {
+    console.error('[Conexão] Erro ao iniciar o bot:', err.message || err);
+    reconnectAttempts++;
+    scheduleReconnect(nextReconnectDelay());
+});

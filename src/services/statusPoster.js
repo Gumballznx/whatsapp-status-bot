@@ -1,6 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 
+const IMAGE_MIMETYPES = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp'
+};
+
 async function postVideoStatus(sock, videoBuffer, caption, jidList) {
     return await sock.sendMessage(
         'status@broadcast',
@@ -9,10 +16,10 @@ async function postVideoStatus(sock, videoBuffer, caption, jidList) {
     );
 }
 
-async function postImageStatus(sock, imageBuffer, caption, jidList) {
+async function postImageStatus(sock, imageBuffer, caption, jidList, mimetype = 'image/jpeg') {
     return await sock.sendMessage(
         'status@broadcast',
-        { image: imageBuffer, mimetype: 'image/jpeg', caption: caption || '' },
+        { image: imageBuffer, mimetype, caption: caption || '' },
         { statusJidList: jidList, broadcast: true }
     );
 }
@@ -37,8 +44,8 @@ async function postMediaFileStatus(sock, filePath, caption, jidList) {
         return await postVideoStatus(sock, buffer, caption, jidList);
     }
 
-    if (['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) {
-        return await postImageStatus(sock, buffer, caption, jidList);
+    if (IMAGE_MIMETYPES[ext]) {
+        return await postImageStatus(sock, buffer, caption, jidList, IMAGE_MIMETYPES[ext]);
     }
 
     throw new Error(`Formato de mídia não suportado para status: ${ext}`);

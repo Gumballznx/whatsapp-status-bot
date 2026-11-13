@@ -5,9 +5,11 @@ const path = require('path');
 const env = require('../config/env');
 const { fetchGoogleContacts } = require('./googleContacts');
 const { postMediaFileStatus } = require('./statusPoster');
+const { hasScheduledRunPassedToday } = require('./cronMatcher');
 
 const LAST_POST_FILE = path.join(__dirname, '../../last_post.json');
 let activeCronJob = null;
+let inFlightPost = null;
 
 function calculateCurrentDay() {
     const start = moment.tz(env.START_DATE, env.TIMEZONE).startOf('day');
@@ -26,6 +28,19 @@ function hasPostedToday() {
     }
 }
 
+/**
+ * Indica se o horário agendado (STATUS_CRON) de hoje já passou.
+ * Usado para que a recuperação ao reconectar não poste antes da hora.
+ */
+function isScheduledTimePassedToday() {
+    try {
+        return hasScheduledRunPassedToday(env.STATUS_CRON, moment.tz(env.TIMEZONE));
+    } catch (e) {
+        console.warn(`[Scheduler] Não foi possível interpretar STATUS_CRON para a recuperação (${e.message}). Recuperação desativada.`);
+        return false;
+    }
+}
+
 function recordTodayPost(dayNumber) {
     try {
         const todayStr = moment.tz(env.TIMEZONE).format('YYYY-MM-DD');
@@ -38,8 +53,14 @@ function recordTodayPost(dayNumber) {
     }
 }
 
-async function triggerDailyStatus(getSocket, isTest = false, maxRetries = 3) {
+async function runDailyStatus(getSocket, isTest, maxRetries) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        // Outra execução pode ter concluído a postagem enquanto aguardávamos
+        if (!isTest && hasPostedToday()) {
+            console.log('[Scheduler] Status de hoje já foi postado. Nada a fazer.');
+            return;
+        }
+
         const sock = typeof getSocket === 'function' ? getSocket() : getSocket;
 
         if (!sock?.user) {
@@ -82,6 +103,27 @@ async function triggerDailyStatus(getSocket, isTest = false, maxRetries = 3) {
     }
 }
 
+/**
+ * Dispara a postagem do status. Chamadas simultâneas (cron + recuperação ao reconectar)
+ * reaproveitam a mesma execução em andamento, evitando postagens duplicadas.
+ */
+function triggerDailyStatus(getSocket, isTest = false, maxRetries = 3) {
+    if (inFlightPost) {
+        console.log('[Scheduler] Já existe uma postagem em andamento. Aguardando a mesma execução.');
+        return inFlightPost;
+    }
+
+    inFlightPost = runDailyStatus(getSocket, isTest, maxRetries)
+        .catch((error) => {
+            console.error('[Scheduler] Erro inesperado ao postar status:', error.message || error);
+        })
+        .finally(() => {
+            inFlightPost = null;
+        });
+
+    return inFlightPost;
+}
+
 function startScheduler(getSocket) {
     if (activeCronJob) {
         activeCronJob.stop();
@@ -107,5 +149,6 @@ module.exports = {
     startScheduler,
     triggerDailyStatus,
     calculateCurrentDay,
-    hasPostedToday
+    hasPostedToday,
+    isScheduledTimePassedToday
 };

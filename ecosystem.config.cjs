@@ -2,7 +2,7 @@ module.exports = {
   apps: [{
     name: 'whatsapp-status-bot',
     script: 'index.js',
-    cwd: '/root/whatsapp-status-bot',
+    cwd: __dirname,
     node_args: '--max-old-space-size=512',
     max_memory_restart: '600M',
     autorestart: true,

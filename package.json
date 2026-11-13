@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "pair": "node pair.js",
-    "connect": "node qr_connect.js"
+    "connect": "node qr_connect.js",
+    "test": "node --test"
   },
   "dependencies": {
     "baileys": "^7.0.0-rc14",

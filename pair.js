@@ -74,7 +74,8 @@ async function startPairing() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            if (hasValidSession()) return;
+            // O evento "qr" se repete a cada ~20s: pedir outro código invalidaria o anterior
+            if (hasValidSession() || pairingRequested) return;
 
             pairingRequested = true;
             try {
@@ -87,6 +88,7 @@ async function startPairing() {
                 console.log('   Aparelhos conectados > Conectar um aparelho > Conectar com número de telefone');
                 console.log('========================================\n');
             } catch (err) {
+                pairingRequested = false;
                 console.error('❌ Erro ao solicitar código:', err.message);
             }
         }

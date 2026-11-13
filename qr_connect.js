@@ -1,26 +1,29 @@
 /**
- * qr_connect.js — Utilitário de primeira ligação
- * 
- * Execute este script UMA VEZ para:
- *   1. Escanear o QR Code e autenticar a sessão
- *   2. Deixar o WhatsApp sincronizar os seus contactos
- *   3. Aguardar o número de contactos estabilizar antes de parar
- * 
- * Após terminar, o index.js principal já terá a sessão e o contacts_cache.json prontos.
- * 
+ * qr_connect.js — Utilitário de primeira ligação via QR Code
+ *
+ * Execute este script UMA VEZ para escanear o QR Code e salvar a sessão em ./session.
+ * Depois, inicie o bot principal com `npm start`.
+ *
+ * Usa o mesmo pacote `baileys` do index.js, garantindo que a sessão seja compatível.
+ * (Para parear por código de telefone em vez de QR, use `npm run pair`.)
+ *
  * Uso: node qr_connect.js
  */
 
-const { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys');
+const baileys = require('baileys');
+const makeWASocket = baileys.default || baileys.makeWASocket || baileys;
+const { Browsers, DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState } = baileys;
 const QRCode = require('qrcode');
+const qrcodeTerminal = require('qrcode-terminal');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 
 const SESSION_PATH = path.join(__dirname, 'session');
-const CONTACTS_FILE = path.join(__dirname, 'contacts_cache.json');
 const QR_PATH = path.join(__dirname, 'qrcode.png');
+
+let isConnected = false;
 
 async function start() {
     console.log('=============================================');
@@ -29,91 +32,77 @@ async function start() {
     console.log('Preparando sessão...\n');
 
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
-    const { version, isLatest } = await fetchLatestBaileysVersion();
-    console.log(`[BAILEYS] Usando versão: ${version.join('.')} | Última: ${isLatest}`);
+
+    let version;
+    try {
+        ({ version } = await fetchLatestBaileysVersion());
+    } catch (e) {
+        version = [2, 3000, 1044006379];
+    }
+    console.log(`[BAILEYS] Usando versão: ${version.join('.')}`);
 
     const sock = makeWASocket({
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: true,
-        syncFullHistory: true, // Ativado aqui para capturar todos os contactos
+        browser: Browsers.ubuntu('Chrome'),
+        syncFullHistory: false,
+        markOnlineOnConnect: false
     });
 
     sock.ev.on('creds.update', saveCreds);
-
-    let contactsArray = [];
-
-    // Carrega cache existente se houver
-    try {
-        if (fs.existsSync(CONTACTS_FILE)) {
-            contactsArray = JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf-8'));
-            console.log(`[CONTACTOS] Cache existente carregado: ${contactsArray.length} contactos.`);
-        }
-    } catch (e) {
-        console.log('[CONTACTOS] Sem cache anterior. Iniciando do zero.');
-    }
-
-    sock.ev.on('contacts.upsert', (contacts) => {
-        const jids = contacts.map(c => c.id).filter(id => id && id.endsWith('@s.whatsapp.net'));
-        const newContacts = jids.filter(id => !contactsArray.includes(id));
-
-        if (newContacts.length > 0) {
-            contactsArray.push(...newContacts);
-            fs.writeFileSync(CONTACTS_FILE, JSON.stringify(contactsArray, null, 2));
-            console.log(`[CONTACTOS] Sincronizados: ${contactsArray.length} total (+${newContacts.length} novos)`);
-        }
-    });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log('\n📱 Gerando QR Code... Aguarde!');
-            QRCode.toFile(QR_PATH, qr, { width: 400 }, (err) => {
-                if (err) {
-                    console.error('Erro ao gerar QR Code:', err);
-                } else {
-                    console.log(`✅ QR Code salvo em: ${QR_PATH}`);
-                    // Abre automaticamente no Windows
-                    if (process.platform === 'win32') {
-                        exec(`start "" "${QR_PATH}"`);
-                    } else {
-                        console.log('👉 Abra o arquivo qrcode.png e escaneie com o WhatsApp.');
-                    }
+            console.log('\n📱 Escaneie o QR Code abaixo (WhatsApp > Aparelhos conectados > Conectar um aparelho):');
+            qrcodeTerminal.generate(qr, { small: true });
+            try {
+                await QRCode.toFile(QR_PATH, qr, { width: 400 });
+                console.log(`✅ QR Code também salvo em: ${QR_PATH}`);
+                if (process.platform === 'win32') {
+                    exec(`start "" "${QR_PATH}"`);
                 }
-            });
+            } catch (err) {
+                console.error('Erro ao gerar imagem do QR Code:', err.message);
+            }
         }
 
         if (connection === 'close') {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
-            console.log(`\n⚠️ Conexão encerrada. Código: ${statusCode}`);
+            if (isConnected) return;
+
             if (statusCode === DisconnectReason.loggedOut) {
                 console.log('❌ Sessão expirada/desconectada no dispositivo. Limpando credenciais...');
-                if (fs.existsSync(SESSION_PATH)) {
-                    fs.rmSync(SESSION_PATH, { recursive: true, force: true });
-                }
-                console.log('🔄 Reinicie o script para ler um novo QR Code.');
-                process.exit(0);
+                fs.rmSync(SESSION_PATH, { recursive: true, force: true });
+                console.log('🔄 Execute o script novamente para ler um novo QR Code.');
+                process.exit(1);
             }
+
+            // Após escanear o QR o WhatsApp pede um reinício da conexão (restartRequired)
+            console.log(`⚠️ Conexão encerrada (código: ${statusCode}). Reconectando...`);
+            setTimeout(() => start().catch(fatal), 2000);
         } else if (connection === 'open') {
+            isConnected = true;
             console.log('\n✅✅✅ WHATSAPP CONECTADO COM SUCESSO! ✅✅✅');
             console.log(`   JID: ${sock.user?.id}`);
-            console.log('\n⏳ ATENÇÃO: NÃO feche este terminal ainda!');
-            console.log('   O WhatsApp está sincronizando seus contactos...');
-            console.log('   Aguarde o número de contactos PARAR DE CRESCER,');
-            console.log('   depois pode fechar e iniciar o bot principal (npm start).\n');
 
-            // Limpa o QR code após conectar
             if (fs.existsSync(QR_PATH)) {
                 fs.unlinkSync(QR_PATH);
-                console.log('[LIMPEZA] qrcode.png removido.');
             }
+
+            setTimeout(() => {
+                console.log('✅ Sessão salva em ./session. Agora inicie o bot com: npm start');
+                process.exit(0);
+            }, 3000);
         }
     });
 }
 
-start().catch(err => {
+function fatal(err) {
     console.error('Erro fatal:', err);
     process.exit(1);
-});
+}
+
+start().catch(fatal);
