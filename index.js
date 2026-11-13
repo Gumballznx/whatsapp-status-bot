@@ -30,6 +30,7 @@ let activeSocket = null;
 let schedulerStarted = false;
 let reconnectAttempts = 0;
 let catchUpTimer = null;
+let presenceInterval = null;
 
 function hasValidSession() {
     try {
@@ -51,6 +52,31 @@ function scheduleReconnect(delayMs) {
             scheduleReconnect(nextReconnectDelay());
         });
     }, delayMs);
+}
+
+/**
+ * Modo "sempre online": envia presença "available" periodicamente para a conta
+ * aparecer online o tempo todo. Efeito colateral: enquanto o WhatsApp vê a conta
+ * online em outro aparelho, o celular pode não tocar notificações.
+ */
+function startPresenceKeepAlive(sock) {
+    stopPresenceKeepAlive();
+    if (!env.ALWAYS_ONLINE) return;
+
+    sock.sendPresenceUpdate('available').catch(() => {});
+    presenceInterval = setInterval(() => {
+        if (activeSocket?.user) {
+            activeSocket.sendPresenceUpdate('available').catch(() => {});
+        }
+    }, 25000);
+    presenceInterval.unref?.();
+}
+
+function stopPresenceKeepAlive() {
+    if (presenceInterval) {
+        clearInterval(presenceInterval);
+        presenceInterval = null;
+    }
 }
 
 function nextReconnectDelay() {
@@ -101,8 +127,8 @@ async function startWhatsAppBot() {
         },
         browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
-        // Não marca a conta como "online": assim o celular continua recebendo notificações
-        markOnlineOnConnect: false,
+        // ALWAYS_ONLINE=false deixa o celular receber notificações normalmente
+        markOnlineOnConnect: env.ALWAYS_ONLINE,
         keepAliveIntervalMs: 25000,
         defaultQueryTimeoutMs: 180000,
         connectTimeoutMs: 60000
@@ -150,6 +176,7 @@ async function startWhatsAppBot() {
         }
 
         if (connection === 'close') {
+            stopPresenceKeepAlive();
             if (catchUpTimer) {
                 clearTimeout(catchUpTimer);
                 catchUpTimer = null;
@@ -190,6 +217,8 @@ async function startWhatsAppBot() {
             if (fs.existsSync(QR_FILE)) {
                 fs.unlinkSync(QR_FILE);
             }
+
+            startPresenceKeepAlive(sock);
 
             if (!schedulerStarted) {
                 startScheduler(() => activeSocket);

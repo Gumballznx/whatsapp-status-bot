@@ -9,6 +9,8 @@ module.exports = {
     BOT_NUMBER: (process.env.BOT_NUMBER || process.env.PAIRING_NUMBER || '').replace(/\D/g, ''),
     // DDI usado para completar números salvos sem código do país (ex: "84 123 4567")
     DEFAULT_COUNTRY_CODE: (process.env.DEFAULT_COUNTRY_CODE || '258').replace(/\D/g, ''),
+    // Mantém a conta aparecendo como "online" o tempo todo (padrão: ligado)
+    ALWAYS_ONLINE: !/^(false|0|no|nao|não)$/i.test((process.env.ALWAYS_ONLINE || 'true').trim()),
     STATUS_CRON: process.env.STATUS_CRON || '0 9 * * *',
     TIMEZONE: process.env.TIMEZONE || 'Africa/Maputo',
     START_DATE: process.env.START_DATE || '2026-01-01',
